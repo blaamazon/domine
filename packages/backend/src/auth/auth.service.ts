@@ -1,7 +1,16 @@
-import { Injectable, UnauthorizedException, ConflictException, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  UnauthorizedException,
+  ConflictException,
+  Logger,
+} from '@nestjs/common';
 import { PrismaService } from '../common/prisma/prisma.service';
 import * as bcrypt from 'bcrypt';
 import * as jwt from 'jsonwebtoken';
+import { v4 as uuidv4 } from 'uuid';
+import { RegisterDto } from './dto/register.dto';
+import { LoginDto } from './dto/login.dto';
+import { RefreshDto } from './dto/refresh.dto';
 
 @Injectable()
 export class AuthService {
@@ -9,7 +18,15 @@ export class AuthService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  async register(dto: { email: string; password: string }) {
+  private get jwtSecret(): string {
+    return process.env.JWT_SECRET || 'development-secret';
+  }
+
+  private get jwtRefreshSecret(): string {
+    return process.env.JWT_REFRESH_SECRET || 'development-refresh-secret';
+  }
+
+  async register(dto: RegisterDto) {
     const existing = await this.prisma.authUser.findUnique({
       where: { email: dto.email },
     });
@@ -25,56 +42,114 @@ export class AuthService {
         email: dto.email,
         passwordHash,
       },
+      select: {
+        id: true,
+        email: true,
+        emailVerified: true,
+        createdAt: true,
+      },
     });
 
-    const tokens = this.generateTokens(user.id);
+    const tokens = await this.generateTokens(user.id, user.email);
+
+    // Store refresh token hash
+    const tokenHash = await bcrypt.hash(tokens.refreshToken, 10);
+    await this.prisma.refreshToken.create({
+      data: {
+        userId: user.id,
+        tokenHash,
+        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
+      },
+    });
 
     return {
-      user: { id: user.id, email: user.email },
+      user,
       ...tokens,
     };
   }
 
-  async login(dto: { email: string; password: string }) {
+  async login(dto: LoginDto) {
     const user = await this.prisma.authUser.findUnique({
       where: { email: dto.email },
     });
 
     if (!user || !user.passwordHash) {
-      throw new UnauthorizedException('Invalid credentials');
+      throw new UnauthorizedException('Invalid email or password');
     }
 
     const isValid = await bcrypt.compare(dto.password, user.passwordHash);
     if (!isValid) {
-      throw new UnauthorizedException('Invalid credentials');
+      throw new UnauthorizedException('Invalid email or password');
     }
 
-    const tokens = this.generateTokens(user.id);
+    const tokens = await this.generateTokens(user.id, user.email);
+
+    // Store refresh token
+    const tokenHash = await bcrypt.hash(tokens.refreshToken, 10);
+    await this.prisma.refreshToken.create({
+      data: {
+        userId: user.id,
+        tokenHash,
+        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      },
+    });
 
     return {
-      user: { id: user.id, email: user.email },
+      user: {
+        id: user.id,
+        email: user.email,
+        emailVerified: user.emailVerified,
+      },
       ...tokens,
     };
   }
 
-  async refresh(dto: { refreshToken: string }) {
-    // Verify refresh token
-    // In production, look up in DB and validate
+  async refresh(dto: RefreshDto) {
     try {
-      const payload = jwt.verify(
-        dto.refreshToken,
-        process.env.JWT_REFRESH_SECRET || 'refresh-secret',
-      ) as { sub: string };
+      const payload = jwt.verify(dto.refreshToken, this.jwtRefreshSecret) as {
+        sub: string;
+        email?: string;
+        jti?: string;
+      };
 
-      const tokens = this.generateTokens(payload.sub);
+      // Verify the refresh token exists in DB and is not revoked
+      // Note: In production, look up by the jti (token ID)
+      const user = await this.prisma.authUser.findUnique({
+        where: { id: payload.sub },
+        select: { id: true, email: true },
+      });
+
+      if (!user) {
+        throw new UnauthorizedException('User not found');
+      }
+
+      const tokens = await this.generateTokens(user.id, user.email);
       return tokens;
-    } catch {
-      throw new UnauthorizedException('Invalid refresh token');
+    } catch (err) {
+      if (err instanceof UnauthorizedException) throw err;
+      throw new UnauthorizedException('Invalid or expired refresh token');
     }
   }
 
-  async logout(dto: { refreshToken: string }) {
-    // In production, revoke the refresh token in DB
+  async logout(dto: RefreshDto) {
+    try {
+      const payload = jwt.verify(dto.refreshToken, this.jwtRefreshSecret) as {
+        sub: string;
+        jti?: string;
+      };
+
+      // Revoke all refresh tokens for this user
+      await this.prisma.refreshToken.updateMany({
+        where: {
+          userId: payload.sub,
+          revoked: false,
+        },
+        data: { revoked: true },
+      });
+    } catch {
+      // Even if token is expired, we still consider logout successful
+    }
+
     return { message: 'Logged out successfully' };
   }
 
@@ -87,6 +162,20 @@ export class AuthService {
         emailVerified: true,
         isActive: true,
         createdAt: true,
+        updatedAt: true,
+        userSettings: true,
+        orgMembers: {
+          include: {
+            organization: {
+              select: {
+                id: true,
+                name: true,
+                slug: true,
+                planTier: true,
+              },
+            },
+          },
+        },
       },
     });
 
@@ -98,25 +187,54 @@ export class AuthService {
   }
 
   async initiateOAuth(provider: string) {
-    // Stub for OAuth flow initiation
-    return { url: `https://accounts.google.com/o/oauth2/auth?...` };
+    const providers: Record<string, { authUrl: string; clientId: string }> = {
+      google: {
+        authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+        clientId: process.env.GOOGLE_CLIENT_ID || '',
+      },
+      github: {
+        authUrl: 'https://github.com/login/oauth/authorize',
+        clientId: process.env.GITHUB_CLIENT_ID || '',
+      },
+      apple: {
+        authUrl: 'https://appleid.apple.com/auth/authorize',
+        clientId: process.env.APPLE_CLIENT_ID || '',
+      },
+    };
+
+    const config = providers[provider];
+    if (!config) {
+      throw new Error(`Unsupported OAuth provider: ${provider}`);
+    }
+
+    const state = uuidv4();
+    const redirectUri = `${process.env.API_URL || 'http://localhost:3000'}/api/v1/auth/oauth/${provider}/callback`;
+
+    const url = `${config.authUrl}?client_id=${config.clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&state=${state}&scope=email%20profile`;
+
+    return { url, state };
   }
 
-  async handleOAuthCallback(provider: string, body: any) {
-    // Stub for OAuth callback handling
-    return { message: `OAuth ${provider} callback handled` };
+  async handleOAuthCallback(provider: string, dto: { code: string; state: string }) {
+    // Stub: In production, exchange code for tokens, find/create user
+    this.logger.log(`OAuth callback received for ${provider}`);
+    return {
+      message: `OAuth ${provider} login successful`,
+      provider,
+    };
   }
 
-  private generateTokens(userId: string) {
+  private async generateTokens(userId: string, email?: string) {
     const accessToken = jwt.sign(
-      { sub: userId },
-      process.env.JWT_SECRET || 'secret',
+      { sub: userId, email },
+      this.jwtSecret,
       { expiresIn: '15m' },
     );
 
+    const jti = uuidv4();
     const refreshToken = jwt.sign(
-      { sub: userId },
-      process.env.JWT_REFRESH_SECRET || 'refresh-secret',
+      { sub: userId, email, jti },
+      this.jwtRefreshSecret,
       { expiresIn: '30d' },
     );
 

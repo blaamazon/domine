@@ -1,1 +1,1 @@
-export {};
+export { JwtAuthGuard, IS_PUBLIC_KEY } from './jwt-auth.guard';
