@@ -1,0 +1,827 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// Auth Schema
+// ============================================================
+
+model AuthUser {
+  id            String   @id @default(uuid()) @db.Uuid
+  email         String   @unique @db.VarChar(255)
+  passwordHash  String?  @map("password_hash") @db.VarChar(255)
+  emailVerified Boolean  @default(false) @map("email_verified")
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  oauthAccounts   OAuthAccount[]
+  refreshTokens   RefreshToken[]
+  apiKeys         ApiKey[]
+  orgMembers      OrgMember[]
+  userSettings    UserSettings?
+  productVersions ProductVersion[]
+
+  @@map("auth_users")
+}
+
+model OAuthAccount {
+  id            String    @id @default(uuid()) @db.Uuid
+  userId        String    @map("user_id") @db.Uuid
+  provider      String    @db.VarChar(50)
+  providerId    String    @map("provider_id") @db.VarChar(255)
+  providerEmail String?   @map("provider_email") @db.VarChar(255)
+  accessToken   String?   @map("access_token") @text
+  refreshToken  String?   @map("refresh_token") @text
+  tokenExpires  DateTime? @map("token_expires") @db.Timestamptz
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  user AuthUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerId])
+  @@map("oauth_accounts")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tokenHash String    @map("token_hash") @db.VarChar(255)
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz
+  revoked   Boolean   @default(false)
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user AuthUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tokenHash])
+  @@map("refresh_tokens")
+}
+
+model ApiKey {
+  id             String    @id @default(uuid()) @db.Uuid
+  userId         String    @map("user_id") @db.Uuid
+  organizationId String?   @map("organization_id") @db.Uuid
+  keyPrefix      String    @map("key_prefix") @db.VarChar(20)
+  keyHash        String    @map("key_hash") @db.VarChar(255)
+  name           String    @db.VarChar(100)
+  scopes         Json      @default("[]")
+  lastUsedAt     DateTime? @map("last_used_at") @db.Timestamptz
+  expiresAt      DateTime? @map("expires_at") @db.Timestamptz
+  isActive       Boolean   @default(true) @map("is_active")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  user AuthUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("api_keys")
+}
+
+// ============================================================
+// User / Organization Schema
+// ============================================================
+
+model Organization {
+  id        String    @id @default(uuid()) @db.Uuid
+  name      String    @db.VarChar(255)
+  slug      String    @unique @db.VarChar(100)
+  ownerId   String    @map("owner_id") @db.Uuid
+  planTier  String    @default("free") @map("plan_tier") @db.VarChar(50)
+  isActive  Boolean   @default(true) @map("is_active")
+  settings  Json      @default("{}")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  owner             AuthUser             @relation(fields: [ownerId], references: [id])
+  members           OrgMember[]
+  products          Product[]
+  bundles           Bundle[]
+  sourceAssets      SourceAsset[]
+  connectorConfigs  ConnectorConfig[]
+  listings          Listing[]
+  landingPages      LandingPage[]
+  leads             Lead[]
+  segments          Segment[]
+  campaigns         Campaign[]
+  emailTemplates    EmailTemplate[]
+  socialPosts       SocialPost[]
+  purchaseReminders PurchaseReminder[]
+  subscriptions     BillingSubscription?
+  invoices          BillingInvoice[]
+  usageRecords      UsageRecord[]
+  schedulerJobs     SchedulerJob[]
+
+  @@map("organizations")
+}
+
+model OrgMember {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  userId         String   @map("user_id") @db.Uuid
+  role           String   @default("member") @db.VarChar(50)
+  joinedAt       DateTime @default(now()) @map("joined_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         AuthUser     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+  @@index([organizationId])
+  @@map("org_members")
+}
+
+model UserSettings {
+  id                String @id @default(uuid()) @db.Uuid
+  userId            String @unique @map("user_id") @db.Uuid
+  displayName       String? @map("display_name") @db.VarChar(255)
+  avatarUrl         String? @map("avatar_url") @text
+  timezone          String @default("UTC") @db.VarChar(50)
+  locale            String @default("en-US") @db.VarChar(10)
+  notificationPrefs Json   @default("{\"email\": true, \"browser\": true}") @map("notification_prefs")
+  theme             String @default("light") @db.VarChar(20)
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  user AuthUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_settings")
+}
+
+// ============================================================
+// Product Schema
+// ============================================================
+
+model Product {
+  id              String    @id @default(uuid()) @db.Uuid
+  organizationId  String    @map("organization_id") @db.Uuid
+  title           String    @db.VarChar(500)
+  slug            String    @db.VarChar(500)
+  description     String?   @text
+  productType     String    @map("product_type") @db.VarChar(50)
+  status          String    @default("draft") @db.VarChar(50)
+  sourceAssetId   String?   @map("source_asset_id") @db.Uuid
+  coverImageUrl   String?   @map("cover_image_url") @text
+  priceCents      Int?      @map("price_cents")
+  currency        String    @default("USD") @db.VarChar(3)
+  metadata        Json      @default("{}")
+  isPublicDomain  Boolean   @default(true) @map("is_public_domain")
+  originalAuthor  String?   @map("original_author") @db.VarChar(500)
+  originalYear    Int?      @map("original_year")
+  tags            String[]
+  publishedAt     DateTime? @map("published_at") @db.Timestamptz
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  deletedAt       DateTime? @map("deleted_at") @db.Timestamptz
+
+  // Full-text search vector (managed via raw SQL migration)
+  // searchVector Unsupported("tsvector")? @map("search_vector")
+
+  organization  Organization       @relation(fields: [organizationId], references: [id])
+  versions      ProductVersion[]
+  files         ProductFile[]
+  categories    ProductCategory[]
+  bundleItems   BundleItem[]
+  listings      Listing[]
+  landingPages  LandingPage[]
+  reviews       Review[]
+  campaignSteps CampaignStep[]
+  socialPosts   SocialPost[]
+  purchaseReminders PurchaseReminder[]
+
+  @@index([organizationId])
+  @@index([status])
+  @@index([productType])
+  @@index([slug, organizationId])
+  @@map("products")
+}
+
+model ProductVersion {
+  id             String   @id @default(uuid()) @db.Uuid
+  productId      String   @map("product_id") @db.Uuid
+  versionNumber  Int      @map("version_number")
+  changesSummary String?  @map("changes_summary") @text
+  fileManifest   Json?    @map("file_manifest")
+  createdBy      String?  @map("created_by") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  product Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  createdByUser AuthUser? @relation(fields: [createdBy], references: [id])
+  files ProductFile[]
+
+  @@unique([productId, versionNumber])
+  @@map("product_versions")
+}
+
+model ProductFile {
+  id             String   @id @default(uuid()) @db.Uuid
+  productId      String   @map("product_id") @db.Uuid
+  versionId      String?  @map("version_id") @db.Uuid
+  fileType       String   @map("file_type") @db.VarChar(50)
+  fileUrl        String   @map("file_url") @text
+  fileSizeBytes  BigInt?  @map("file_size_bytes")
+  checksumSha256 String?  @map("checksum_sha256") @db.VarChar(64)
+  isPreview      Boolean  @default(false) @map("is_preview")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  product Product        @relation(fields: [productId], references: [id], onDelete: Cascade)
+  version ProductVersion? @relation(fields: [versionId], references: [id])
+
+  @@map("product_files")
+}
+
+model Category {
+  id          String    @id @default(uuid()) @db.Uuid
+  name        String    @db.VarChar(255)
+  slug        String    @unique @db.VarChar(255)
+  parentId    String?   @map("parent_id") @db.Uuid
+  description String?   @text
+  sortOrder   Int       @default(0) @map("sort_order")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  parent   Category?         @relation("CategoryTree", fields: [parentId], references: [id])
+  children Category[]        @relation("CategoryTree")
+  products ProductCategory[]
+
+  @@index([slug])
+  @@index([parentId])
+  @@map("categories")
+}
+
+model ProductCategory {
+  productId  String @map("product_id") @db.Uuid
+  categoryId String @map("category_id") @db.Uuid
+
+  product  Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([productId, categoryId])
+  @@map("product_categories")
+}
+
+model Bundle {
+  id              String   @id @default(uuid()) @db.Uuid
+  organizationId  String   @map("organization_id") @db.Uuid
+  title           String   @db.VarChar(500)
+  description     String?  @text
+  bundleType      String   @map("bundle_type") @db.VarChar(50)
+  priceCents      Int?     @map("price_cents")
+  discountCents   Int?     @map("discount_cents")
+  isActive        Boolean  @default(true) @map("is_active")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  items        BundleItem[]
+
+  @@map("bundles")
+}
+
+model BundleItem {
+  id        String   @id @default(uuid()) @db.Uuid
+  bundleId  String   @map("bundle_id") @db.Uuid
+  productId String   @map("product_id") @db.Uuid
+  sortOrder Int      @default(0) @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  bundle  Bundle  @relation(fields: [bundleId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([bundleId, productId])
+  @@map("bundle_items")
+}
+
+model Review {
+  id        String   @id @default(uuid()) @db.Uuid
+  productId String   @map("product_id") @db.Uuid
+  rating    Int
+  title     String?  @db.VarChar(255)
+  body      String?  @text
+  authorName String? @map("author_name") @db.VarChar(255)
+  authorEmail String? @map("author_email") @db.VarChar(255)
+  isVerified Boolean  @default(false) @map("is_verified")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@map("reviews")
+}
+
+// ============================================================
+// Content Pipeline Schema
+// ============================================================
+
+model SourceAsset {
+  id              String   @id @default(uuid()) @db.Uuid
+  organizationId  String   @map("organization_id") @db.Uuid
+  source          String   @db.VarChar(100)
+  sourceId        String   @map("source_id") @db.VarChar(255)
+  title           String?  @db.VarChar(500)
+  author          String?  @db.VarChar(500)
+  description     String?  @text
+  originalUrl     String?  @map("original_url") @text
+  contentType     String   @map("content_type") @db.VarChar(50)
+  licenseInfo     String   @default("Public Domain") @map("license_info") @db.VarChar(255)
+  rawMetadata     Json?    @map("raw_metadata")
+  discoveredAt    DateTime @default(now()) @map("discovered_at")
+  status          String   @default("discovered") @db.VarChar(50)
+  errorMessage    String?  @map("error_message") @text
+
+  organization  Organization       @relation(fields: [organizationId], references: [id])
+  processedDocs ProcessedDocument[]
+  enrichmentJobs EnrichmentJob[]
+
+  @@unique([organizationId, source, sourceId])
+  @@index([status])
+  @@index([source, contentType])
+  @@map("source_assets")
+}
+
+model ProcessedDocument {
+  id               String   @id @default(uuid()) @db.Uuid
+  sourceAssetId    String   @map("source_asset_id") @db.Uuid
+  format           String   @db.VarChar(50)
+  fileUrl          String   @map("file_url") @text
+  fileSizeBytes    BigInt?  @map("file_size_bytes")
+  checksumSha256   String?  @map("checksum_sha256") @db.VarChar(64)
+  processingTimeMs Int?     @map("processing_time_ms")
+  qualityScore     Float?   @map("quality_score")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  sourceAsset SourceAsset @relation(fields: [sourceAssetId], references: [id], onDelete: Cascade)
+
+  @@map("processed_documents")
+}
+
+model Template {
+  id              String   @id @default(uuid()) @db.Uuid
+  organizationId  String   @map("organization_id") @db.Uuid
+  name            String   @db.VarChar(255)
+  templateType    String   @map("template_type") @db.VarChar(50)
+  format          String?  @db.VarChar(20)
+  content         String   @text
+  previewUrl      String?  @map("preview_url") @text
+  isDefault       Boolean  @default(false) @map("is_default")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@map("templates")
+}
+
+model EnrichmentJob {
+  id             String    @id @default(uuid()) @db.Uuid
+  sourceAssetId  String    @map("source_asset_id") @db.Uuid
+  jobType        String    @map("job_type") @db.VarChar(100)
+  status         String    @default("pending") @db.VarChar(50)
+  config         Json?
+  result         Json?
+  startedAt      DateTime? @map("started_at") @db.Timestamptz
+  completedAt    DateTime? @map("completed_at") @db.Timestamptz
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  sourceAsset SourceAsset @relation(fields: [sourceAssetId], references: [id])
+
+  @@index([status])
+  @@map("enrichment_jobs")
+}
+
+// ============================================================
+// Marketplace Schema
+// ============================================================
+
+model Marketplace {
+  id           String   @id @default(uuid()) @db.Uuid
+  name         String   @db.VarChar(100)
+  code         String   @unique @db.VarChar(50)
+  isActive     Boolean  @default(true) @map("is_active")
+  configSchema Json?    @map("config_schema")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  connectorConfigs ConnectorConfig[]
+  listings         Listing[]
+
+  @@map("marketplaces")
+}
+
+model ConnectorConfig {
+  id              String    @id @default(uuid()) @db.Uuid
+  organizationId  String    @map("organization_id") @db.Uuid
+  marketplaceId   String    @map("marketplace_id") @db.Uuid
+  isEnabled       Boolean   @default(false) @map("is_enabled")
+  credentials     Json
+  settings        Json      @default("{}")
+  lastSyncAt      DateTime? @map("last_sync_at") @db.Timestamptz
+  lastSyncStatus  String?   @map("last_sync_status") @db.VarChar(50)
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  marketplace  Marketplace  @relation(fields: [marketplaceId], references: [id])
+  listings     Listing[]
+
+  @@unique([organizationId, marketplaceId])
+  @@map("connector_configs")
+}
+
+model Listing {
+  id              String    @id @default(uuid()) @db.Uuid
+  productId       String    @map("product_id") @db.Uuid
+  marketplaceId   String    @map("marketplace_id") @db.Uuid
+  organizationId  String    @map("organization_id") @db.Uuid
+  connectorCfgId  String    @map("connector_cfg_id") @db.Uuid
+  externalId      String?   @map("external_id") @db.VarChar(255)
+  listingUrl      String?   @map("listing_url") @text
+  title           String?   @db.VarChar(500)
+  description     String?   @text
+  priceCents      Int?      @map("price_cents")
+  currency        String?   @db.VarChar(3)
+  status          String    @default("pending") @db.VarChar(50)
+  syncStatus      String?   @map("sync_status") @db.VarChar(50)
+  syncError       String?   @map("sync_error") @text
+  marketplaceData Json      @default("{}") @map("marketplace_data")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  product      Product           @relation(fields: [productId], references: [id])
+  marketplace  Marketplace       @relation(fields: [marketplaceId], references: [id])
+  organization Organization      @relation(fields: [organizationId], references: [id])
+  connectorCfg ConnectorConfig   @relation(fields: [connectorCfgId], references: [id])
+  orders       ListingOrder[]
+  syncLogs     ListingSyncLog[]
+
+  @@unique([productId, marketplaceId])
+  @@index([organizationId])
+  @@index([productId])
+  @@index([status])
+  @@index([externalId])
+  @@map("listings")
+}
+
+model ListingOrder {
+  id                  String   @id @default(uuid()) @db.Uuid
+  listingId           String   @map("listing_id") @db.Uuid
+  externalOrderId     String?  @map("external_order_id") @db.VarChar(255)
+  marketplaceOrderId  String?  @map("marketplace_order_id") @db.VarChar(255)
+  buyerEmail          String?  @map("buyer_email") @db.VarChar(255)
+  buyerName           String?  @map("buyer_name") @db.VarChar(255)
+  orderStatus         String   @map("order_status") @db.VarChar(50)
+  quantity            Int      @default(1)
+  amountCents         Int?     @map("amount_cents")
+  currency            String?  @db.VarChar(3)
+  feeCents            Int?     @map("fee_cents")
+  netCents            Int?     @map("net_cents")
+  orderedAt           DateTime? @map("ordered_at") @db.Timestamptz
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  listing Listing @relation(fields: [listingId], references: [id])
+
+  @@index([listingId])
+  @@map("listing_orders")
+}
+
+model ListingSyncLog {
+  id            String   @id @default(uuid()) @db.Uuid
+  listingId     String   @map("listing_id") @db.Uuid
+  syncType      String   @map("sync_type") @db.VarChar(50)
+  status        String   @db.VarChar(50)
+  requestData   Json?    @map("request_data")
+  responseData  Json?    @map("response_data")
+  errorMessage  String?  @map("error_message") @text
+  durationMs    Int?     @map("duration_ms")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  listing Listing @relation(fields: [listingId], references: [id])
+
+  @@map("listing_sync_logs")
+}
+
+// ============================================================
+// Marketing Schema
+// ============================================================
+
+model LandingPage {
+  id              String   @id @default(uuid()) @db.Uuid
+  organizationId  String   @map("organization_id") @db.Uuid
+  productId       String?  @map("product_id") @db.Uuid
+  title           String   @db.VarChar(255)
+  slug            String   @db.VarChar(255)
+  metaTitle       String?  @map("meta_title") @db.VarChar(255)
+  metaDescription String?  @map("meta_description") @text
+  content         Json
+  templateId      String?  @map("template_id") @db.Uuid
+  publishedUrl    String?  @map("published_url") @text
+  isPublished     Boolean  @default(false) @map("is_published")
+  seoScore        Float?   @map("seo_score")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  product      Product?     @relation(fields: [productId], references: [id])
+  leads        Lead[]
+
+  @@unique([organizationId, slug])
+  @@map("landing_pages")
+}
+
+model Lead {
+  id                String    @id @default(uuid()) @db.Uuid
+  organizationId    String    @map("organization_id") @db.Uuid
+  email             String    @db.VarChar(255)
+  firstName         String?   @map("first_name") @db.VarChar(100)
+  lastName          String?   @map("last_name") @db.VarChar(100)
+  source            String?   @db.VarChar(100)
+  sourceUrl         String?   @map("source_url") @text
+  landingPageId     String?   @map("landing_page_id") @db.Uuid
+  utmSource         String?   @map("utm_source") @db.VarChar(255)
+  utmMedium         String?   @map("utm_medium") @db.VarChar(255)
+  utmCampaign       String?   @map("utm_campaign") @db.VarChar(255)
+  ipAddress         String?   @map("ip_address") @db.Inet
+  userAgent         String?   @map("user_agent") @text
+  gdprConsent       Boolean   @default(false) @map("gdpr_consent")
+  consentGrantedAt  DateTime? @map("consent_granted_at") @db.Timestamptz
+  emailOpens        Int       @default(0) @map("email_opens")
+  emailClicks       Int       @default(0) @map("email_clicks")
+  pageViews         Int       @default(0) @map("page_views")
+  status            String    @default("active") @db.VarChar(50)
+  convertedAt       DateTime? @map("converted_at") @db.Timestamptz
+  leadScore         Float     @default(0) @map("lead_score")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  organization      Organization      @relation(fields: [organizationId], references: [id])
+  landingPage       LandingPage?      @relation(fields: [landingPageId], references: [id])
+  purchaseReminders PurchaseReminder[]
+
+  @@unique([organizationId, email])
+  @@index([organizationId])
+  @@index([status])
+  @@index([leadScore])
+  @@map("leads")
+}
+
+model Segment {
+  id              String   @id @default(uuid()) @db.Uuid
+  organizationId  String   @map("organization_id") @db.Uuid
+  name            String   @db.VarChar(255)
+  description     String?  @text
+  segmentType     String   @default("dynamic") @map("segment_type") @db.VarChar(50)
+  matchLogic      String   @default("and") @map("match_logic") @db.VarChar(10)
+  leadCount       Int      @default(0) @map("lead_count")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  rules        SegmentRule[]
+
+  @@index([organizationId])
+  @@map("segments")
+}
+
+model SegmentRule {
+  id        String   @id @default(uuid()) @db.Uuid
+  segmentId String   @map("segment_id") @db.Uuid
+  field     String   @db.VarChar(100)
+  operator  String   @db.VarChar(20)
+  value     Json
+  createdAt DateTime @default(now()) @map("created_at")
+
+  segment Segment @relation(fields: [segmentId], references: [id], onDelete: Cascade)
+
+  @@map("segment_rules")
+}
+
+model Campaign {
+  id                String    @id @default(uuid()) @db.Uuid
+  organizationId    String    @map("organization_id") @db.Uuid
+  productId         String?   @map("product_id") @db.Uuid
+  name              String    @db.VarChar(255)
+  description       String?   @text
+  campaignType      String    @map("campaign_type") @db.VarChar(50)
+  status            String    @default("draft") @db.VarChar(50)
+  segmentIds        String[]  @map("segment_ids")
+  startAt           DateTime? @map("start_at") @db.Timestamptz
+  endAt             DateTime? @map("end_at") @db.Timestamptz
+  sentCount         Int       @default(0) @map("sent_count")
+  openCount         Int       @default(0) @map("open_count")
+  clickCount        Int       @default(0) @map("click_count")
+  conversionCount   Int       @default(0) @map("conversion_count")
+  revenueCents      Int       @default(0) @map("revenue_cents")
+  metadata          Json      @default("{}")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  product      Product?     @relation(fields: [productId], references: [id])
+  steps        CampaignStep[]
+
+  @@index([organizationId])
+  @@index([status])
+  @@map("campaigns")
+}
+
+model CampaignStep {
+  id               String    @id @default(uuid()) @db.Uuid
+  campaignId       String    @map("campaign_id") @db.Uuid
+  stepOrder        Int       @map("step_order")
+  stepType         String    @map("step_type") @db.VarChar(50)
+  delayHours       Int       @default(0) @map("delay_hours")
+  emailTemplateId  String?   @map("email_template_id") @db.Uuid
+  emailSubject     String?   @map("email_subject") @db.VarChar(500)
+  emailBody        String?   @map("email_body") @text
+  socialPlatform   String?   @map("social_platform") @db.VarChar(50)
+  socialContent    String?   @map("social_content") @text
+  socialMediaUrls  Json?     @map("social_media_urls")
+  conditionField   String?   @map("condition_field") @db.VarChar(100)
+  conditionOperator String?  @map("condition_operator") @db.VarChar(20)
+  conditionValue   Json?     @map("condition_value")
+  webhookUrl       String?   @map("webhook_url") @text
+  webhookPayload   Json?     @map("webhook_payload")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, stepOrder])
+  @@map("campaign_steps")
+}
+
+model EmailTemplate {
+  id              String   @id @default(uuid()) @db.Uuid
+  organizationId  String   @map("organization_id") @db.Uuid
+  name            String   @db.VarChar(255)
+  subject         String   @db.VarChar(500)
+  previewText     String?  @map("preview_text") @db.VarChar(255)
+  bodyHtml        String   @map("body_html") @text
+  bodyText        String?  @map("body_text") @text
+  fromName        String?  @map("from_name") @db.VarChar(255)
+  fromEmail       String?  @map("from_email") @db.VarChar(255)
+  replyTo         String?  @map("reply_to") @db.VarChar(255)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@map("email_templates")
+}
+
+model SocialPost {
+  id              String    @id @default(uuid()) @db.Uuid
+  organizationId  String    @map("organization_id") @db.Uuid
+  campaignStepId  String?   @map("campaign_step_id") @db.Uuid
+  productId       String?   @map("product_id") @db.Uuid
+  platform        String    @db.VarChar(50)
+  content         String    @text
+  mediaUrls       String[]  @map("media_urls")
+  scheduledAt     DateTime? @map("scheduled_at") @db.Timestamptz
+  postedAt        DateTime? @map("posted_at") @db.Timestamptz
+  postUrl         String?   @map("post_url") @text
+  status          String    @default("draft") @db.VarChar(50)
+  engagementData  Json?     @map("engagement_data")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  product      Product?     @relation(fields: [productId], references: [id])
+
+  @@map("social_posts")
+}
+
+model PurchaseReminder {
+  id              String    @id @default(uuid()) @db.Uuid
+  organizationId  String    @map("organization_id") @db.Uuid
+  leadId          String    @map("lead_id") @db.Uuid
+  productId       String?   @map("product_id") @db.Uuid
+  reminderType    String    @map("reminder_type") @db.VarChar(50)
+  triggerEvent    String?   @map("trigger_event") @db.VarChar(100)
+  stepNumber      Int       @default(1) @map("step_number")
+  scheduledAt     DateTime? @map("scheduled_at") @db.Timestamptz
+  sentAt          DateTime? @map("sent_at") @db.Timestamptz
+  channel         String?   @db.VarChar(50)
+  content         String?   @text
+  clickedAt       DateTime? @map("clicked_at") @db.Timestamptz
+  convertedAt     DateTime? @map("converted_at") @db.Timestamptz
+  status          String    @default("pending") @db.VarChar(50)
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  lead         Lead         @relation(fields: [leadId], references: [id])
+  product      Product?     @relation(fields: [productId], references: [id])
+
+  @@index([leadId])
+  @@index([status])
+  @@map("purchase_reminders")
+}
+
+// ============================================================
+// Billing Schema
+// ============================================================
+
+model BillingSubscription {
+  id                  String    @id @default(uuid()) @db.Uuid
+  organizationId      String    @unique @map("organization_id") @db.Uuid
+  stripeSubscriptionId String?  @unique @map("stripe_subscription_id") @db.VarChar(255)
+  stripeCustomerId    String?   @map("stripe_customer_id") @db.VarChar(255)
+  planTier            String    @map("plan_tier") @db.VarChar(50)
+  status              String    @default("active") @db.VarChar(50)
+  currentPeriodStart  DateTime? @map("current_period_start") @db.Timestamptz
+  currentPeriodEnd    DateTime? @map("current_period_end") @db.Timestamptz
+  trialEnd            DateTime? @map("trial_end") @db.Timestamptz
+  cancelAtPeriodEnd   Boolean   @default(false) @map("cancel_at_period_end")
+  maxProducts         Int?      @map("max_products")
+  maxMarketplaces     Int?      @map("max_marketplaces")
+  featureFlags        Json      @default("{}") @map("feature_flags")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+
+  organization Organization          @relation(fields: [organizationId], references: [id])
+  usageRecords UsageRecord[]
+  invoices     BillingInvoice[]
+
+  @@map("billing_subscriptions")
+}
+
+model UsageRecord {
+  id                String   @id @default(uuid()) @db.Uuid
+  organizationId    String   @map("organization_id") @db.Uuid
+  subscriptionId    String?  @map("subscription_id") @db.Uuid
+  metric            String   @db.VarChar(100)
+  quantity          Int
+  recordedAt        DateTime @default(now()) @map("recorded_at") @db.Timestamptz
+  stripeUsageRecordId String? @map("stripe_usage_record_id") @db.VarChar(255)
+
+  organization   Organization        @relation(fields: [organizationId], references: [id])
+  subscription   BillingSubscription? @relation(fields: [subscriptionId], references: [id])
+
+  @@index([organizationId, recordedAt])
+  @@map("usage_records")
+}
+
+model BillingInvoice {
+  id              String    @id @default(uuid()) @db.Uuid
+  organizationId  String    @map("organization_id") @db.Uuid
+  stripeInvoiceId String?   @unique @map("stripe_invoice_id") @db.VarChar(255)
+  subscriptionId  String?   @map("subscription_id") @db.Uuid
+  amountDueCents  Int       @map("amount_due_cents")
+  amountPaidCents Int?      @map("amount_paid_cents")
+  currency        String    @default("USD") @db.VarChar(3)
+  status          String    @db.VarChar(50)
+  invoicePdfUrl   String?   @map("invoice_pdf_url") @text
+  periodStart     DateTime? @map("period_start") @db.Timestamptz
+  periodEnd       DateTime? @map("period_end") @db.Timestamptz
+  paidAt          DateTime? @map("paid_at") @db.Timestamptz
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  organization Organization        @relation(fields: [organizationId], references: [id])
+  subscription BillingSubscription? @relation(fields: [subscriptionId], references: [id])
+
+  @@map("billing_invoices")
+}
+
+// ============================================================
+// Scheduler Schema
+// ============================================================
+
+model SchedulerJob {
+  id              String   @id @default(uuid()) @db.Uuid
+  organizationId  String?  @map("organization_id") @db.Uuid
+  name            String   @db.VarChar(255)
+  jobType         String   @map("job_type") @db.VarChar(100)
+  cronExpression  String?  @map("cron_expression") @db.VarChar(100)
+  workflowDag     Json?    @map("workflow_dag")
+  config          Json     @default("{}")
+  isActive        Boolean  @default(true) @map("is_active")
+  maxRetries      Int      @default(3) @map("max_retries")
+  timeoutMinutes  Int      @default(30) @map("timeout_minutes")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  organization Organization?  @relation(fields: [organizationId], references: [id])
+  executions    JobExecution[]
+
+  @@index([isActive])
+  @@map("scheduler_jobs")
+}
+
+model JobExecution {
+  id           String    @id @default(uuid()) @db.Uuid
+  jobId        String    @map("job_id") @db.Uuid
+  status       String    @default("pending") @db.VarChar(50)
+  startedAt    DateTime? @map("started_at") @db.Timestamptz
+  completedAt  DateTime? @map("completed_at") @db.Timestamptz
+  result       Json?
+  errorMessage String?   @map("error_message") @text
+  retryCount   Int       @default(0) @map("retry_count")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  job SchedulerJob @relation(fields: [jobId], references: [id])
+
+  @@index([status])
+  @@index([jobId])
+  @@map("job_executions")
+}
