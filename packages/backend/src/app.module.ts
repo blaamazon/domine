@@ -15,23 +15,23 @@ import { SchedulerModule } from './scheduler/scheduler.module';
 
 @Module({
   imports: [
-    // Configuration
+    // Configuration — make env vars globally available
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: ['.env', '.env.local'],
     }),
 
-    // Rate limiting
+    // Rate limiting (applied globally)
     ThrottlerModule.forRoot([
       {
-        ttl: 60000,
-        limit: 100,
+        ttl: 60000,  // 1 minute window
+        limit: 100,  // 100 requests per minute default
       },
     ]),
 
-    // Core modules
+    // Core application modules
     PrismaModule,
-    AuthModule,
+    AuthModule,     // Also registers JwtAuthGuard globally via APP_GUARD
     UsersModule,
     ProductsModule,
     ContentModule,
